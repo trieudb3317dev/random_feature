@@ -1,0 +1,95 @@
+async swapTokenOnSolana(
+    privateKey: string,
+    inputMint: string,
+    outputMint: string,
+    trade: Record<string, any>,
+    connection: solanaWeb3.Connection
+): Promise < string | null > {
+    if(!privateKey) {
+        console.error("❌ Missing private key. Aborting swap.");
+        return null;
+    }
+
+        if(!trade || !trade.ct_amount) {
+    console.error("❌ Invalid trade object. Aborting swap.");
+    return null;
+}
+
+// ✅ 1. Khởi tạo ví từ private key
+const payerKeypair = await this.getSolanaKeypair(privateKey);
+console.log(`🔹 Using wallet: ${payerKeypair.publicKey.toBase58()}`);
+
+// ✅ 2. Program ID của Raydium (Đã kiểm tra executable)
+const RAYDIUM_PROGRAM_ID = new solanaWeb3.PublicKey("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C");
+const programInfo = await connection.getAccountInfo(RAYDIUM_PROGRAM_ID);
+
+if (!programInfo || !programInfo.executable) {
+    console.error("❌ Program ID không tồn tại hoặc không thể truy cập.");
+    return null;
+}
+
+console.log("✅ Program ID hợp lệ và có thể truy cập.");
+
+// ✅ 3. Tìm pool swap của token X với Y
+const swapPoolAddress = await this.getSwapPoolAddress(inputMint, outputMint);
+if (!swapPoolAddress) {
+    console.error(`⚠️ No swap pool found for ${inputMint} ↔ ${outputMint}. Aborting swap.`);
+    return null;
+}
+
+console.log(`✅ Found swap pool: ${swapPoolAddress.toBase58()}`);
+
+// ✅ 4. Tạo instruction swap token trên Raydium
+const instructionIdentifier = Buffer.from([0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // Swap ID chuẩn
+const amountBuffer = Buffer.alloc(8);
+amountBuffer.writeBigUInt64LE(BigInt(trade.ct_amount * solanaWeb3.LAMPORTS_PER_SOL));
+
+const swapInstruction = new solanaWeb3.TransactionInstruction({
+    programId: RAYDIUM_PROGRAM_ID,
+    keys: [
+        { pubkey: payerKeypair.publicKey, isSigner: true, isWritable: true },
+        { pubkey: swapPoolAddress, isSigner: false, isWritable: true },
+        { pubkey: new solanaWeb3.PublicKey(inputMint), isSigner: false, isWritable: true },
+        { pubkey: new solanaWeb3.PublicKey(outputMint), isSigner: false, isWritable: true },
+    ],
+    data: Buffer.concat([instructionIdentifier, amountBuffer]),
+});
+
+try {
+    // ✅ 5. Gửi giao dịch lên mạng Solana
+    const transaction = new solanaWeb3.Transaction().add(swapInstruction);
+    const signature = await solanaWeb3.sendAndConfirmTransaction(connection, transaction, [payerKeypair]);
+
+    console.log(`✅ Swap successful! Transaction Hash: ${signature}`);
+    return signature;
+} catch (error) {
+    console.error("❌ Swap thất bại.");
+
+    if (error instanceof solanaWeb3.SendTransactionError) {
+        console.log("🔍 Chi tiết lỗi giao dịch:", error.message);
+        const txid = (error as any)?.signature || null;
+
+        if (txid) {
+            const txStatus = await connection.getSignatureStatus(txid);
+            console.log(`📝 Trạng thái giao dịch cho ${txid}:`, txStatus);
+        } else {
+            console.warn("⚠️ Không thể lấy signature để kiểm tra trạng thái.");
+        }
+
+        // Lấy logs chi tiết
+        if ((error as any)?.getLogs) {
+            const logs = await(error as any).getLogs(connection);
+            if (logs) {
+                console.error("📝 Logs giao dịch:");
+                logs.forEach((log: string) => console.error(`🚀 ${log}`));
+            } else {
+                console.warn("⚠️ Không thể lấy logs từ giao dịch.");
+            }
+        }
+    } else {
+        console.error("❌ Lỗi không xác định:", error);
+    }
+
+    return null;
+}
+    }
